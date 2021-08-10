@@ -219,10 +219,10 @@ fn process_init_reserve(
     let reserve_liquidity_mint_info = next_account_info(account_info_iter)?;
     let reserve_liquidity_supply_info = next_account_info(account_info_iter)?;
     let reserve_liquidity_fee_receiver_info = next_account_info(account_info_iter)?;
-    let reserve_collateral_mint_info = next_account_info(account_info_iter)?;
-    let reserve_collateral_supply_info = next_account_info(account_info_iter)?;
     let pyth_product_info = next_account_info(account_info_iter)?;
     let pyth_price_info = next_account_info(account_info_iter)?;
+    let reserve_collateral_mint_info = next_account_info(account_info_iter)?;
+    let reserve_collateral_supply_info = next_account_info(account_info_iter)?;
     let lending_market_info = next_account_info(account_info_iter)?;
     let lending_market_authority_info = next_account_info(account_info_iter)?;
     let lending_market_owner_info = next_account_info(account_info_iter)?;
@@ -1538,6 +1538,7 @@ fn process_flash_loan(
     let lending_market_authority_info = next_account_info(account_info_iter)?;
     let token_program_id = next_account_info(account_info_iter)?;
     let flash_loan_receiver_program_id = next_account_info(account_info_iter)?;
+    let user_transfer_authority_info = next_account_info(account_info_iter)?;
 
     if program_id == flash_loan_receiver_program_id.key {
         msg!("Lending program cannot be used as the flash loan receiver program provided");
@@ -1605,12 +1606,14 @@ fn process_flash_loan(
         AccountMeta::new(*destination_liquidity_info.key, false),
         AccountMeta::new(*source_liquidity_info.key, false),
         AccountMeta::new_readonly(*token_program_id.key, false),
+        AccountMeta::new(*user_transfer_authority_info.key, true),
     ];
     let mut flash_loan_instruction_account_infos = vec![
         destination_liquidity_info.clone(),
         flash_loan_receiver_program_id.clone(),
         source_liquidity_info.clone(),
         token_program_id.clone(),
+        user_transfer_authority_info.clone(),
     ];
     for account_info in account_info_iter {
         flash_loan_instruction_accounts.push(AccountMeta {

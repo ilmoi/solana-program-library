@@ -55,6 +55,7 @@ export const initReserveInstruction = (
         { pubkey: collateralSupply, isSigner: false, isWritable: true },
         { pubkey: lendingMarket, isSigner: false, isWritable: true },
         { pubkey: lendingMarketAuthority, isSigner: false, isWritable: false },
+        { pubkey: lendingMarketOwner, isSigner: true, isWritable: false },
         { pubkey: transferAuthority, isSigner: true, isWritable: false },
         { pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false },
         { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },

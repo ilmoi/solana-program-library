@@ -288,6 +288,7 @@ pub enum LendingInstruction {
     ///   8. `[]` Flash loan receiver program id.
     ///             Must implement an instruction that has tag of 0 and a signature of `(amount: u64)`
     ///             This instruction must return the amount to the source liquidity account.
+    ///   9. `[signer]` user transfer authority.
     ///   .. `[any]` Additional accounts expected by the receiving program's `ReceiveFlashLoan` instruction.
     ///
     ///   The flash loan receiver program that is to be invoked should contain an instruction with
