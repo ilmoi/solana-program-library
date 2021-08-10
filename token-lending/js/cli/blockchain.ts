@@ -1,6 +1,6 @@
 import {
     Connection,
-    Keypair,
+    Keypair, LAMPORTS_PER_SOL,
     PublicKey,
     sendAndConfirmTransaction, Signer,
     SystemProgram,
@@ -35,6 +35,7 @@ import {
     TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
 import { borrowFlashLoanInstruction } from '../src/instructions/borrowFlashLoan';
+import { newAccountWithLamports } from './util';
 
 // ============================================================================= bc class
 
@@ -62,7 +63,7 @@ export class Blockchain {
 
     FLASH_LOAN_PROGRAM_ID = new PublicKey("Eiy9gzpAcjQiav3q4QQNLFxRqCVFXiPboVwLSDS19UFc");
 
-    ownerKp: Keypair = Keypair.fromSecretKey(Uint8Array.from([208, 175, 150, 242, 88, 34, 108, 88, 177, 16, 168, 75, 115, 181, 199, 242, 120, 4, 78, 75, 19, 227, 13, 215, 184, 108, 226, 53, 111, 149, 179, 84, 137, 121, 79, 1, 160, 223, 124, 241, 202, 203, 220, 237, 50, 242, 57, 158, 226, 207, 203, 188, 43, 28, 70, 110, 214, 234, 251, 15, 249, 157, 62, 80]));
+    ownerKp: Keypair = null;
     lendingMarketKp: Keypair = new Keypair();
     lendingMarketAuthority: PublicKey;
     obligationKp: Keypair = new Keypair();
@@ -135,6 +136,8 @@ export class Blockchain {
     // --------------------------------------- init lending market
 
     async initLendingMarket() {
+        this.ownerKp = await newAccountWithLamports(this.connection, LAMPORTS_PER_SOL*10);
+        
         console.log('create & initiate lending market');
         const createLendingMarketAccIx = await this._generateCreateStateAccIx(
             this.lendingMarketKp.publicKey,
