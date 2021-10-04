@@ -25,6 +25,7 @@ pub enum LendingInstruction {
     ///   1. `[]` Rent sysvar.
     ///   2. `[]` Token program id.
     ///   3. `[]` Oracle program id.
+    ///   4. `[]` Switchboard Oracle program id.
     InitLendingMarket {
         /// Owner authority which can add new reserves
         owner: Pubkey,
@@ -57,18 +58,19 @@ pub enum LendingInstruction {
     ///   3. `[]` Reserve liquidity SPL Token mint.
     ///   4. `[writable]` Reserve liquidity supply SPL Token account - uninitialized.
     ///   5. `[writable]` Reserve liquidity fee receiver - uninitialized.
-    ///   6. `[writable]` Reserve collateral SPL Token mint - uninitialized.
-    ///   7. `[writable]` Reserve collateral token supply - uninitialized.
-    ///   8. `[]` Pyth product account.
-    ///   9. `[]` Pyth price account.
+    ///   6. `[]` Pyth product account.
+    ///   7. `[]` Pyth price account.
     ///             This will be used as the reserve liquidity oracle account.
-    ///   10 `[]` Lending market account.
-    ///   11 `[]` Derived lending market authority.
-    ///   12 `[signer]` Lending market owner.
-    ///   13 `[signer]` User transfer authority ($authority).
-    ///   14 `[]` Clock sysvar.
-    ///   15 `[]` Rent sysvar.
-    ///   16 `[]` Token program id.
+    ///   8. `[]` Switchboard price feed account. used as a backup oracle
+    ///   9. `[writable]` Reserve collateral SPL Token mint - uninitialized.
+    ///   10 `[writable]` Reserve collateral token supply - uninitialized.
+    ///   11 `[]` Lending market account.
+    ///   12 `[]` Derived lending market authority.
+    ///   13 `[signer]` Lending market owner.
+    ///   14 `[signer]` User transfer authority ($authority).
+    ///   15 `[]` Clock sysvar.
+    ///   16 `[]` Rent sysvar.
+    ///   17 `[]` Token program id.
     InitReserve {
         /// Initial amount of liquidity to deposit into the new reserve
         liquidity_amount: u64,
@@ -82,9 +84,11 @@ pub enum LendingInstruction {
     /// Accounts expected by this instruction:
     ///
     ///   0. `[writable]` Reserve account.
-    ///   1. `[]` Reserve liquidity oracle account.
+    ///   1. `[]` Pyth Reserve liquidity oracle account.
     ///             Must be the Pyth price account specified at InitReserve.
-    ///   2. `[]` Clock sysvar.
+    ///   2. `[]` Switchboard Reserve liquidity oracle account.
+    ///             Must be the Switchboard price feed account specified at InitReserve.
+    ///   3. `[]` Clock sysvar.
     RefreshReserve,
 
     // 4
@@ -117,7 +121,7 @@ pub enum LendingInstruction {
     ///   0. `[writable]` Source collateral token account.
     ///                     $authority can transfer $collateral_amount.
     ///   1. `[writable]` Destination liquidity token account.
-    ///   2. `[writable]` Reserve account.
+    ///   2. `[writable]` Reserve account. - refreshed
     ///   3. `[writable]` Reserve collateral SPL Token mint.
     ///   4. `[writable]` Reserve liquidity supply SPL Token account.
     ///   5. `[]` Lending market account.
@@ -308,6 +312,73 @@ pub enum LendingInstruction {
         /// The amount that is to be borrowed - u64::MAX for up to 100% of available liquidity
         amount: u64,
     },
+
+    // 14
+    /// Combines DepositReserveLiquidity and DepositObligationCollateral
+    ///
+    /// Accounts expected by this instruction:
+    ///
+    ///   0. `[writable]` Source liquidity token account.
+    ///                     $authority can transfer $liquidity_amount.
+    ///   1. `[writable]` Destination collateral token account.
+    ///   2. `[writable]` Reserve account.
+    ///   3. `[writable]` Reserve liquidity supply SPL Token account.
+    ///   4. `[writable]` Reserve collateral SPL Token mint.
+    ///   5. `[]` Lending market account.
+    ///   6. `[]` Derived lending market authority.
+    ///   7. `[writable]` Destination deposit reserve collateral supply SPL Token account.
+    ///   8. `[writable]` Obligation account.
+    ///   9. `[signer]` Obligation owner.
+    ///   10 `[]` Pyth price oracle account.
+    ///   11 `[]` Switchboard price feed oracle account.
+    ///   12 `[signer]` User transfer authority ($authority).
+    ///   13 `[]` Clock sysvar.
+    ///   14 `[]` Token program id.
+    DepositReserveLiquidityAndObligationCollateral {
+        /// Amount of liquidity to deposit in exchange
+        liquidity_amount: u64,
+    },
+
+    // 15
+    /// Combines WithdrawObligationCollateral and RedeemReserveCollateral
+    ///
+    /// Accounts expected by this instruction:
+    ///
+    ///   0. `[writable]` Source withdraw reserve collateral supply SPL Token account.
+    ///   1. `[writable]` Destination collateral token account.
+    ///                     Minted by withdraw reserve collateral mint.
+    ///   2. `[]` Withdraw reserve account - refreshed.
+    ///   3. `[writable]` Obligation account - refreshed.
+    ///   4. `[]` Lending market account.
+    ///   5. `[]` Derived lending market authority.
+    ///   6. `[writable]` User liquidity token account.
+    ///   7. `[writable]` Reserve collateral SPL Token mint.
+    ///   8. `[writable]` Reserve liquidity supply SPL Token account.
+    ///   9. `[signer]` Obligation owner
+    ///   10 `[signer]` User transfer authority ($authority).
+    ///   11. `[]` Clock sysvar.
+    ///   12. `[]` Token program id.
+    WithdrawObligationCollateralAndRedeemReserveCollateral {
+        /// liquidity_amount is the amount of collateral tokens to withdraw
+        collateral_amount: u64,
+    },
+
+    // 16
+    /// Updates a reserves config and a reserve price oracle pubkeys
+    ///
+    /// Accounts expected by this instruction:
+    ///
+    ///   1. `[writable]` Reserve account - refreshed
+    ///   2 `[]` Lending market account.
+    ///   3 `[]` Derived lending market authority.
+    ///   4 `[signer]` Lending market owner.
+    ///   5 `[]` Pyth product key.
+    ///   6 `[]` Pyth price key.
+    ///   7 `[]` Switchboard key.
+    UpdateReserveConfig {
+        /// Reserve config to update to
+        config: ReserveConfig,
+    },
 }
 
 impl LendingInstruction {
@@ -340,7 +411,10 @@ impl LendingInstruction {
                 let (max_borrow_rate, rest) = Self::unpack_u8(rest)?;
                 let (borrow_fee_wad, rest) = Self::unpack_u64(rest)?;
                 let (flash_loan_fee_wad, rest) = Self::unpack_u64(rest)?;
-                let (host_fee_percentage, _rest) = Self::unpack_u8(rest)?;
+                let (host_fee_percentage, rest) = Self::unpack_u8(rest)?;
+                let (deposit_limit, rest) = Self::unpack_u64(rest)?;
+                let (borrow_limit, rest) = Self::unpack_u64(rest)?;
+                let (fee_receiver, _) = Self::unpack_pubkey(rest)?;
                 Self::InitReserve {
                     liquidity_amount,
                     config: ReserveConfig {
@@ -356,6 +430,9 @@ impl LendingInstruction {
                             flash_loan_fee_wad,
                             host_fee_percentage,
                         },
+                        deposit_limit,
+                        borrow_limit,
+                        fee_receiver,
                     },
                 }
             }
@@ -393,6 +470,49 @@ impl LendingInstruction {
             13 => {
                 let (amount, _rest) = Self::unpack_u64(rest)?;
                 Self::FlashLoan { amount }
+            }
+            14 => {
+                let (liquidity_amount, _rest) = Self::unpack_u64(rest)?;
+                Self::DepositReserveLiquidityAndObligationCollateral { liquidity_amount }
+            }
+            15 => {
+                let (collateral_amount, _rest) = Self::unpack_u64(rest)?;
+                Self::WithdrawObligationCollateralAndRedeemReserveCollateral { collateral_amount }
+            }
+            16 => {
+                let (optimal_utilization_rate, _rest) = Self::unpack_u8(rest)?;
+                let (loan_to_value_ratio, _rest) = Self::unpack_u8(_rest)?;
+                let (liquidation_bonus, _rest) = Self::unpack_u8(_rest)?;
+                let (liquidation_threshold, _rest) = Self::unpack_u8(_rest)?;
+                let (min_borrow_rate, _rest) = Self::unpack_u8(_rest)?;
+                let (optimal_borrow_rate, _rest) = Self::unpack_u8(_rest)?;
+                let (max_borrow_rate, _rest) = Self::unpack_u8(_rest)?;
+                let (borrow_fee_wad, _rest) = Self::unpack_u64(_rest)?;
+                let (flash_loan_fee_wad, _rest) = Self::unpack_u64(_rest)?;
+                let (host_fee_percentage, _rest) = Self::unpack_u8(_rest)?;
+                let (deposit_limit, _rest) = Self::unpack_u64(_rest)?;
+                let (borrow_limit, _rest) = Self::unpack_u64(_rest)?;
+                let (fee_receiver, _) = Self::unpack_pubkey(_rest)?;
+
+                Self::UpdateReserveConfig {
+                    config: ReserveConfig {
+                        optimal_utilization_rate,
+                        loan_to_value_ratio,
+                        liquidation_bonus,
+                        liquidation_threshold,
+                        min_borrow_rate,
+                        optimal_borrow_rate,
+                        max_borrow_rate,
+                        fees: ReserveFees {
+                            borrow_fee_wad,
+                            flash_loan_fee_wad,
+                            host_fee_percentage,
+                        },
+                        deposit_limit,
+                        borrow_limit,
+                        fee_receiver,
+                    },
+                }
             }
             _ => {
                 msg!("Instruction cannot be unpacked");
@@ -486,6 +606,9 @@ impl LendingInstruction {
                                 flash_loan_fee_wad,
                                 host_fee_percentage,
                             },
+                        deposit_limit,
+                        borrow_limit,
+                        fee_receiver,
                     },
             } => {
                 buf.push(2);
@@ -500,6 +623,9 @@ impl LendingInstruction {
                 buf.extend_from_slice(&borrow_fee_wad.to_le_bytes());
                 buf.extend_from_slice(&flash_loan_fee_wad.to_le_bytes());
                 buf.extend_from_slice(&host_fee_percentage.to_le_bytes());
+                buf.extend_from_slice(&deposit_limit.to_le_bytes());
+                buf.extend_from_slice(&borrow_limit.to_le_bytes());
+                buf.extend_from_slice(&fee_receiver.to_bytes());
             }
             Self::RefreshReserve => {
                 buf.push(3);
@@ -542,6 +668,30 @@ impl LendingInstruction {
                 buf.push(13);
                 buf.extend_from_slice(&amount.to_le_bytes());
             }
+            Self::DepositReserveLiquidityAndObligationCollateral { liquidity_amount } => {
+                buf.push(14);
+                buf.extend_from_slice(&liquidity_amount.to_le_bytes());
+            }
+            Self::WithdrawObligationCollateralAndRedeemReserveCollateral { collateral_amount } => {
+                buf.push(15);
+                buf.extend_from_slice(&collateral_amount.to_le_bytes());
+            }
+            Self::UpdateReserveConfig { config } => {
+                buf.push(16);
+                buf.extend_from_slice(&config.optimal_utilization_rate.to_le_bytes());
+                buf.extend_from_slice(&config.loan_to_value_ratio.to_le_bytes());
+                buf.extend_from_slice(&config.liquidation_bonus.to_le_bytes());
+                buf.extend_from_slice(&config.liquidation_threshold.to_le_bytes());
+                buf.extend_from_slice(&config.min_borrow_rate.to_le_bytes());
+                buf.extend_from_slice(&config.optimal_borrow_rate.to_le_bytes());
+                buf.extend_from_slice(&config.max_borrow_rate.to_le_bytes());
+                buf.extend_from_slice(&config.fees.borrow_fee_wad.to_le_bytes());
+                buf.extend_from_slice(&config.fees.flash_loan_fee_wad.to_le_bytes());
+                buf.extend_from_slice(&config.fees.host_fee_percentage.to_le_bytes());
+                buf.extend_from_slice(&config.deposit_limit.to_le_bytes());
+                buf.extend_from_slice(&config.borrow_limit.to_le_bytes());
+                buf.extend_from_slice(&config.fee_receiver.to_bytes());
+            }
         }
         buf
     }
@@ -554,6 +704,7 @@ pub fn init_lending_market(
     quote_currency: [u8; 32],
     lending_market_pubkey: Pubkey,
     oracle_program_id: Pubkey,
+    switchboard_oracle_program_id: Pubkey,
 ) -> Instruction {
     Instruction {
         program_id,
@@ -562,6 +713,7 @@ pub fn init_lending_market(
             AccountMeta::new_readonly(sysvar::rent::id(), false),
             AccountMeta::new_readonly(spl_token::id(), false),
             AccountMeta::new_readonly(oracle_program_id, false),
+            AccountMeta::new_readonly(switchboard_oracle_program_id, false),
         ],
         data: LendingInstruction::InitLendingMarket {
             owner,
@@ -599,11 +751,11 @@ pub fn init_reserve(
     reserve_pubkey: Pubkey,
     reserve_liquidity_mint_pubkey: Pubkey,
     reserve_liquidity_supply_pubkey: Pubkey,
-    reserve_liquidity_fee_receiver_pubkey: Pubkey,
     reserve_collateral_mint_pubkey: Pubkey,
     reserve_collateral_supply_pubkey: Pubkey,
     pyth_product_pubkey: Pubkey,
     pyth_price_pubkey: Pubkey,
+    switchboard_feed_pubkey: Pubkey,
     lending_market_pubkey: Pubkey,
     lending_market_owner_pubkey: Pubkey,
     user_transfer_authority_pubkey: Pubkey,
@@ -618,11 +770,12 @@ pub fn init_reserve(
         AccountMeta::new(reserve_pubkey, false),
         AccountMeta::new_readonly(reserve_liquidity_mint_pubkey, false),
         AccountMeta::new(reserve_liquidity_supply_pubkey, false),
-        AccountMeta::new(reserve_liquidity_fee_receiver_pubkey, false),
+        AccountMeta::new(config.fee_receiver, false),
         AccountMeta::new(reserve_collateral_mint_pubkey, false),
         AccountMeta::new(reserve_collateral_supply_pubkey, false),
         AccountMeta::new_readonly(pyth_product_pubkey, false),
         AccountMeta::new_readonly(pyth_price_pubkey, false),
+        AccountMeta::new_readonly(switchboard_feed_pubkey, false),
         AccountMeta::new_readonly(lending_market_pubkey, false),
         AccountMeta::new_readonly(lending_market_authority_pubkey, false),
         AccountMeta::new_readonly(lending_market_owner_pubkey, true),
@@ -646,11 +799,13 @@ pub fn init_reserve(
 pub fn refresh_reserve(
     program_id: Pubkey,
     reserve_pubkey: Pubkey,
-    reserve_liquidity_oracle_pubkey: Pubkey,
+    reserve_liquidity_pyth_oracle_pubkey: Pubkey,
+    reserve_liquidity_switchboard_oracle_pubkey: Pubkey,
 ) -> Instruction {
     let accounts = vec![
         AccountMeta::new(reserve_pubkey, false),
-        AccountMeta::new_readonly(reserve_liquidity_oracle_pubkey, false),
+        AccountMeta::new_readonly(reserve_liquidity_pyth_oracle_pubkey, false),
+        AccountMeta::new_readonly(reserve_liquidity_switchboard_oracle_pubkey, false),
         AccountMeta::new_readonly(sysvar::clock::id(), false),
     ];
     Instruction {
@@ -802,6 +957,54 @@ pub fn deposit_obligation_collateral(
             AccountMeta::new_readonly(spl_token::id(), false),
         ],
         data: LendingInstruction::DepositObligationCollateral { collateral_amount }.pack(),
+    }
+}
+
+/// Creates a 'DepositReserveLiquidityAndObligationCollateral' instruction.
+#[allow(clippy::too_many_arguments)]
+pub fn deposit_reserve_liquidity_and_obligation_collateral(
+    program_id: Pubkey,
+    liquidity_amount: u64,
+    source_liquidity_pubkey: Pubkey,
+    user_collateral_pubkey: Pubkey,
+    reserve_pubkey: Pubkey,
+    reserve_liquidity_supply_pubkey: Pubkey,
+    reserve_collateral_mint_pubkey: Pubkey,
+    lending_market_pubkey: Pubkey,
+    destination_deposit_collateral_pubkey: Pubkey,
+    obligation_pubkey: Pubkey,
+    obligation_owner_pubkey: Pubkey,
+    reserve_liquidity_pyth_oracle_pubkey: Pubkey,
+    reserve_liquidity_switchboard_oracle_pubkey: Pubkey,
+    user_transfer_authority_pubkey: Pubkey,
+) -> Instruction {
+    let (lending_market_authority_pubkey, _bump_seed) = Pubkey::find_program_address(
+        &[&lending_market_pubkey.to_bytes()[..PUBKEY_BYTES]],
+        &program_id,
+    );
+    Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(source_liquidity_pubkey, false),
+            AccountMeta::new(user_collateral_pubkey, false),
+            AccountMeta::new(reserve_pubkey, false),
+            AccountMeta::new(reserve_liquidity_supply_pubkey, false),
+            AccountMeta::new(reserve_collateral_mint_pubkey, false),
+            AccountMeta::new_readonly(lending_market_pubkey, false),
+            AccountMeta::new_readonly(lending_market_authority_pubkey, false),
+            AccountMeta::new(destination_deposit_collateral_pubkey, false),
+            AccountMeta::new(obligation_pubkey, false),
+            AccountMeta::new(obligation_owner_pubkey, true),
+            AccountMeta::new_readonly(reserve_liquidity_pyth_oracle_pubkey, false),
+            AccountMeta::new_readonly(reserve_liquidity_switchboard_oracle_pubkey, false),
+            AccountMeta::new_readonly(user_transfer_authority_pubkey, true),
+            AccountMeta::new_readonly(sysvar::clock::id(), false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ],
+        data: LendingInstruction::DepositReserveLiquidityAndObligationCollateral {
+            liquidity_amount,
+        }
+        .pack(),
     }
 }
 
@@ -979,5 +1182,37 @@ pub fn flash_loan(
         program_id,
         accounts,
         data: LendingInstruction::FlashLoan { amount }.pack(),
+    }
+}
+
+/// Creates an 'UpdateReserveConfig' instruction.
+#[allow(clippy::too_many_arguments)]
+pub fn update_reserve_config(
+    program_id: Pubkey,
+    config: ReserveConfig,
+    reserve_pubkey: Pubkey,
+    lending_market_pubkey: Pubkey,
+    lending_market_owner_pubkey: Pubkey,
+    pyth_product_pubkey: Pubkey,
+    pyth_price_pubkey: Pubkey,
+    switchboard_feed_pubkey: Pubkey,
+) -> Instruction {
+    let (lending_market_authority_pubkey, _bump_seed) = Pubkey::find_program_address(
+        &[&lending_market_pubkey.to_bytes()[..PUBKEY_BYTES]],
+        &program_id,
+    );
+    let accounts = vec![
+        AccountMeta::new(reserve_pubkey, false),
+        AccountMeta::new_readonly(lending_market_pubkey, false),
+        AccountMeta::new_readonly(lending_market_authority_pubkey, false),
+        AccountMeta::new_readonly(lending_market_owner_pubkey, true),
+        AccountMeta::new_readonly(pyth_product_pubkey, false),
+        AccountMeta::new_readonly(pyth_price_pubkey, false),
+        AccountMeta::new_readonly(switchboard_feed_pubkey, false),
+    ];
+    Instruction {
+        program_id,
+        accounts,
+        data: LendingInstruction::UpdateReserveConfig { config }.pack(),
     }
 }

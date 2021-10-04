@@ -18,8 +18,9 @@ use spl_token::{
 };
 use spl_token_lending::{
     instruction::{
-        borrow_obligation_liquidity, deposit_reserve_liquidity, init_lending_market,
-        init_obligation, init_reserve, liquidate_obligation, refresh_reserve,
+        borrow_obligation_liquidity, deposit_reserve_liquidity,
+        deposit_reserve_liquidity_and_obligation_collateral, init_lending_market, init_obligation,
+        init_reserve, liquidate_obligation, refresh_reserve,
     },
     math::{Decimal, Rate, TryAdd, TryMul},
     pyth,
@@ -38,28 +39,33 @@ pub const QUOTE_CURRENCY: [u8; 32] =
 pub const LAMPORTS_TO_SOL: u64 = 1_000_000_000;
 pub const FRACTIONAL_TO_USDC: u64 = 1_000_000;
 
-pub const TEST_RESERVE_CONFIG: ReserveConfig = ReserveConfig {
-    optimal_utilization_rate: 80,
-    loan_to_value_ratio: 50,
-    liquidation_bonus: 5,
-    liquidation_threshold: 55,
-    min_borrow_rate: 0,
-    optimal_borrow_rate: 4,
-    max_borrow_rate: 30,
-    fees: ReserveFees {
-        /// 0.00001% (Aave borrow fee)
-        borrow_fee_wad: 100_000_000_000,
-        /// 0.3% (Aave flash loan fee)
-        flash_loan_fee_wad: 3_000_000_000_000_000,
-        host_fee_percentage: 20,
-    },
-};
+pub fn test_reserve_config() -> ReserveConfig {
+    ReserveConfig {
+        optimal_utilization_rate: 80,
+        loan_to_value_ratio: 50,
+        liquidation_bonus: 5,
+        liquidation_threshold: 55,
+        min_borrow_rate: 0,
+        optimal_borrow_rate: 4,
+        max_borrow_rate: 30,
+        fees: ReserveFees {
+            borrow_fee_wad: 100_000_000_000,
+            flash_loan_fee_wad: 3_000_000_000_000_000,
+            host_fee_percentage: 20,
+        },
+        deposit_limit: 100_000_000_000,
+        borrow_limit: u64::MAX,
+        fee_receiver: Keypair::new().pubkey(),
+    }
+}
 
 pub const SOL_PYTH_PRODUCT: &str = "3Mnn2fX6rQyUsyELYms1sBJyChWofzSNRoqYzvgMVz5E";
 pub const SOL_PYTH_PRICE: &str = "J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix";
+pub const SOL_SWITCHBOARD_FEED: &str = "AdtRGGhmqvom3Jemp5YNrxd9q9unX36BZk1pujkkXijL";
 
 pub const SRM_PYTH_PRODUCT: &str = "6MEwdxe4g1NeAF9u6KDG14anJpFsVEa2cvr5H6iriFZ8";
 pub const SRM_PYTH_PRICE: &str = "992moaMQKs32GKZ9dxi8keyM2bUmbrwBZpK4p2K6X5Vs";
+pub const SRM_SWITCHBOARD_FEED: &str = "BAoygKcKN7wk8yKzLD6sxzUQUqLvhBV1rjMA4UJqfZuH";
 
 pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
@@ -107,6 +113,7 @@ pub fn add_lending_market(test: &mut ProgramTest) -> TestLendingMarket {
             quote_currency: QUOTE_CURRENCY,
             token_program_id: spl_token::id(),
             oracle_program_id,
+            switchboard_oracle_program_id: oracle_program_id,
         }),
         &spl_token_lending::id(),
     );
@@ -117,6 +124,7 @@ pub fn add_lending_market(test: &mut ProgramTest) -> TestLendingMarket {
         authority: lending_market_authority,
         quote_currency: QUOTE_CURRENCY,
         oracle_program_id,
+        switchboard_oracle_program_id: oracle_program_id,
     }
 }
 
@@ -166,7 +174,7 @@ pub fn add_obligation(
         .map(|(borrow_reserve, liquidity_amount)| {
             let borrowed_amount_wads = Decimal::from(*liquidity_amount);
 
-            let mut liquidity = ObligationLiquidity::new(borrow_reserve.pubkey);
+            let mut liquidity = ObligationLiquidity::new(borrow_reserve.pubkey, Decimal::one());
             liquidity.borrowed_amount_wads = borrowed_amount_wads;
 
             (
@@ -204,6 +212,7 @@ pub fn add_obligation(
 
     TestObligation {
         pubkey: obligation_pubkey,
+        keypair: obligation_keypair,
         lending_market: lending_market.pubkey,
         owner: user_accounts_owner.pubkey(),
         deposits: test_deposits,
@@ -304,9 +313,8 @@ pub fn add_reserve(
         &spl_token::id(),
     );
 
-    let liquidity_fee_receiver_pubkey = Pubkey::new_unique();
     test.add_packable_account(
-        liquidity_fee_receiver_pubkey,
+        config.fee_receiver,
         u32::MAX as u64,
         &Token {
             mint: liquidity_mint_pubkey,
@@ -341,8 +349,8 @@ pub fn add_reserve(
             mint_pubkey: liquidity_mint_pubkey,
             mint_decimals: liquidity_mint_decimals,
             supply_pubkey: liquidity_supply_pubkey,
-            fee_receiver: liquidity_fee_receiver_pubkey,
-            oracle_pubkey: oracle.price_pubkey,
+            pyth_oracle_pubkey: oracle.pyth_price_pubkey,
+            switchboard_oracle_pubkey: oracle.switchboard_feed_pubkey,
             market_price: oracle.price,
         }),
         collateral: ReserveCollateral::new(NewReserveCollateralParams {
@@ -412,9 +420,9 @@ pub fn add_reserve(
         liquidity_mint_pubkey,
         liquidity_mint_decimals,
         liquidity_supply_pubkey,
-        liquidity_fee_receiver_pubkey,
         liquidity_host_pubkey,
-        liquidity_oracle_pubkey: oracle.price_pubkey,
+        liquidity_pyth_oracle_pubkey: oracle.pyth_price_pubkey,
+        liquidity_switchboard_oracle_pubkey: oracle.switchboard_feed_pubkey,
         collateral_mint_pubkey,
         collateral_supply_pubkey,
         user_liquidity_pubkey,
@@ -452,6 +460,7 @@ pub struct TestLendingMarket {
     pub authority: Pubkey,
     pub quote_currency: [u8; 32],
     pub oracle_program_id: Pubkey,
+    pub switchboard_oracle_program_id: Pubkey,
 }
 
 pub struct BorrowArgs<'a> {
@@ -500,6 +509,7 @@ impl TestLendingMarket {
                     QUOTE_CURRENCY,
                     lending_market_pubkey,
                     oracle_program_id,
+                    oracle_program_id,
                 ),
             ],
             Some(&payer.pubkey()),
@@ -515,6 +525,7 @@ impl TestLendingMarket {
             authority: lending_market_authority,
             quote_currency: QUOTE_CURRENCY,
             oracle_program_id,
+            switchboard_oracle_program_id: oracle_program_id,
         }
     }
 
@@ -528,7 +539,8 @@ impl TestLendingMarket {
             &[refresh_reserve(
                 spl_token_lending::id(),
                 reserve.pubkey,
-                reserve.liquidity_oracle_pubkey,
+                reserve.liquidity_pyth_oracle_pubkey,
+                reserve.liquidity_switchboard_oracle_pubkey,
             )],
             Some(&payer.pubkey()),
         );
@@ -577,6 +589,62 @@ impl TestLendingMarket {
         let recent_blockhash = banks_client.get_recent_blockhash().await.unwrap();
         transaction.sign(
             &[payer, user_accounts_owner, &user_transfer_authority],
+            recent_blockhash,
+        );
+
+        assert_matches!(banks_client.process_transaction(transaction).await, Ok(()));
+    }
+
+    pub async fn deposit_obligation_and_collateral(
+        &self,
+        banks_client: &mut BanksClient,
+        user_accounts_owner: &Keypair,
+        payer: &Keypair,
+        reserve: &TestReserve,
+        obligation: &TestObligation,
+        obligation_keypair: &Keypair,
+        liquidity_amount: u64,
+    ) {
+        let user_transfer_authority = Keypair::new();
+        let mut transaction = Transaction::new_with_payer(
+            &[
+                approve(
+                    &spl_token::id(),
+                    &reserve.user_liquidity_pubkey,
+                    &user_transfer_authority.pubkey(),
+                    &user_accounts_owner.pubkey(),
+                    &[],
+                    liquidity_amount,
+                )
+                .unwrap(),
+                deposit_reserve_liquidity_and_obligation_collateral(
+                    spl_token_lending::id(),
+                    liquidity_amount,
+                    reserve.user_liquidity_pubkey,
+                    reserve.user_collateral_pubkey,
+                    reserve.pubkey,
+                    reserve.liquidity_supply_pubkey,
+                    reserve.collateral_mint_pubkey,
+                    reserve.pubkey,
+                    reserve.collateral_supply_pubkey,
+                    obligation.pubkey,
+                    obligation.owner,
+                    reserve.liquidity_pyth_oracle_pubkey,
+                    reserve.liquidity_switchboard_oracle_pubkey,
+                    user_transfer_authority.pubkey(),
+                ),
+            ],
+            Some(&payer.pubkey()),
+        );
+
+        let recent_blockhash = banks_client.get_recent_blockhash().await.unwrap();
+        transaction.sign(
+            &[
+                payer,
+                user_accounts_owner,
+                &user_transfer_authority,
+                &obligation_keypair,
+            ],
             recent_blockhash,
         );
 
@@ -654,7 +722,7 @@ impl TestLendingMarket {
                 borrow_reserve.liquidity_supply_pubkey,
                 borrow_reserve.user_liquidity_pubkey,
                 borrow_reserve.pubkey,
-                borrow_reserve.liquidity_fee_receiver_pubkey,
+                borrow_reserve.config.fee_receiver,
                 obligation.pubkey,
                 self.pubkey,
                 obligation.owner,
@@ -695,9 +763,9 @@ pub struct TestReserve {
     pub liquidity_mint_pubkey: Pubkey,
     pub liquidity_mint_decimals: u8,
     pub liquidity_supply_pubkey: Pubkey,
-    pub liquidity_fee_receiver_pubkey: Pubkey,
     pub liquidity_host_pubkey: Pubkey,
-    pub liquidity_oracle_pubkey: Pubkey,
+    pub liquidity_pyth_oracle_pubkey: Pubkey,
+    pub liquidity_switchboard_oracle_pubkey: Pubkey,
     pub collateral_mint_pubkey: Pubkey,
     pub collateral_supply_pubkey: Pubkey,
     pub user_liquidity_pubkey: Pubkey,
@@ -716,6 +784,7 @@ impl TestReserve {
         config: ReserveConfig,
         liquidity_mint_pubkey: Pubkey,
         user_liquidity_pubkey: Pubkey,
+        liquidity_fee_receiver_keypair: &Keypair,
         payer: &Keypair,
         user_accounts_owner: &Keypair,
     ) -> Result<Self, TransactionError> {
@@ -724,7 +793,6 @@ impl TestReserve {
         let collateral_mint_keypair = Keypair::new();
         let collateral_supply_keypair = Keypair::new();
         let liquidity_supply_keypair = Keypair::new();
-        let liquidity_fee_receiver_keypair = Keypair::new();
         let liquidity_host_keypair = Keypair::new();
         let user_collateral_token_keypair = Keypair::new();
         let user_transfer_authority_keypair = Keypair::new();
@@ -806,11 +874,11 @@ impl TestReserve {
                     reserve_pubkey,
                     liquidity_mint_pubkey,
                     liquidity_supply_keypair.pubkey(),
-                    liquidity_fee_receiver_keypair.pubkey(),
                     collateral_mint_keypair.pubkey(),
                     collateral_supply_keypair.pubkey(),
-                    oracle.product_pubkey,
-                    oracle.price_pubkey,
+                    oracle.pyth_product_pubkey,
+                    oracle.pyth_price_pubkey,
+                    oracle.switchboard_feed_pubkey,
                     lending_market.pubkey,
                     lending_market.owner.pubkey(),
                     user_transfer_authority_keypair.pubkey(),
@@ -818,7 +886,6 @@ impl TestReserve {
             ],
             Some(&payer.pubkey()),
         );
-
         let recent_blockhash = banks_client.get_recent_blockhash().await.unwrap();
         transaction.sign(
             &vec![
@@ -836,24 +903,23 @@ impl TestReserve {
             ],
             recent_blockhash,
         );
-
         banks_client
             .process_transaction(transaction)
             .await
             .map(|_| Self {
-                name,
+                name: name,
                 pubkey: reserve_pubkey,
                 lending_market_pubkey: lending_market.pubkey,
-                config,
-                liquidity_mint_pubkey,
+                config: config,
+                liquidity_mint_pubkey: liquidity_mint_pubkey,
                 liquidity_mint_decimals: liquidity_mint.decimals,
                 liquidity_supply_pubkey: liquidity_supply_keypair.pubkey(),
-                liquidity_fee_receiver_pubkey: liquidity_fee_receiver_keypair.pubkey(),
                 liquidity_host_pubkey: liquidity_host_keypair.pubkey(),
-                liquidity_oracle_pubkey: oracle.price_pubkey,
+                liquidity_pyth_oracle_pubkey: oracle.pyth_price_pubkey,
+                liquidity_switchboard_oracle_pubkey: oracle.switchboard_feed_pubkey,
                 collateral_mint_pubkey: collateral_mint_keypair.pubkey(),
                 collateral_supply_pubkey: collateral_supply_keypair.pubkey(),
-                user_liquidity_pubkey,
+                user_liquidity_pubkey: user_liquidity_pubkey,
                 user_collateral_pubkey: user_collateral_token_keypair.pubkey(),
                 market_price: oracle.price,
             })
@@ -887,8 +953,12 @@ impl TestReserve {
         assert_eq!(self.config, reserve.config);
 
         assert_eq!(
-            self.liquidity_oracle_pubkey,
-            reserve.liquidity.oracle_pubkey
+            self.liquidity_pyth_oracle_pubkey,
+            reserve.liquidity.pyth_oracle_pubkey
+        );
+        assert_eq!(
+            self.liquidity_switchboard_oracle_pubkey,
+            reserve.liquidity.switchboard_oracle_pubkey
         );
         assert_eq!(
             reserve.liquidity.cumulative_borrow_rate_wads,
@@ -903,6 +973,7 @@ impl TestReserve {
 #[derive(Debug)]
 pub struct TestObligation {
     pub pubkey: Pubkey,
+    pub keypair: Keypair,
     pub lending_market: Pubkey,
     pub owner: Pubkey,
     pub deposits: Vec<TestObligationCollateral>,
@@ -920,6 +991,7 @@ impl TestObligation {
         let obligation_keypair = Keypair::new();
         let obligation = TestObligation {
             pubkey: obligation_keypair.pubkey(),
+            keypair: obligation_keypair,
             lending_market: lending_market.pubkey,
             owner: user_accounts_owner.pubkey(),
             deposits: vec![],
@@ -931,7 +1003,7 @@ impl TestObligation {
             &[
                 create_account(
                     &payer.pubkey(),
-                    &obligation_keypair.pubkey(),
+                    &obligation.keypair.pubkey(),
                     rent.minimum_balance(Obligation::LEN),
                     Obligation::LEN as u64,
                     &spl_token_lending::id(),
@@ -948,7 +1020,7 @@ impl TestObligation {
 
         let recent_blockhash = banks_client.get_recent_blockhash().await.unwrap();
         transaction.sign(
-            &vec![payer, &obligation_keypair, user_accounts_owner],
+            &vec![payer, &obligation.keypair, user_accounts_owner],
             recent_blockhash,
         );
 
@@ -1062,8 +1134,9 @@ pub fn add_usdc_mint(test: &mut ProgramTest) -> TestMint {
 }
 
 pub struct TestOracle {
-    pub product_pubkey: Pubkey,
-    pub price_pubkey: Pubkey,
+    pub pyth_product_pubkey: Pubkey,
+    pub pyth_price_pubkey: Pubkey,
+    pub switchboard_feed_pubkey: Pubkey,
     pub price: Decimal,
 }
 
@@ -1072,6 +1145,7 @@ pub fn add_sol_oracle(test: &mut ProgramTest) -> TestOracle {
         test,
         Pubkey::from_str(SOL_PYTH_PRODUCT).unwrap(),
         Pubkey::from_str(SOL_PYTH_PRICE).unwrap(),
+        Pubkey::from_str(SOL_SWITCHBOARD_FEED).unwrap(),
         // Set SOL price to $20
         Decimal::from(20u64),
     )
@@ -1083,6 +1157,7 @@ pub fn add_usdc_oracle(test: &mut ProgramTest) -> TestOracle {
         // Mock with SRM since Pyth doesn't have USDC yet
         Pubkey::from_str(SRM_PYTH_PRODUCT).unwrap(),
         Pubkey::from_str(SRM_PYTH_PRICE).unwrap(),
+        Pubkey::from_str(SRM_SWITCHBOARD_FEED).unwrap(),
         // Set USDC price to $1
         Decimal::from(1u64),
     )
@@ -1090,22 +1165,23 @@ pub fn add_usdc_oracle(test: &mut ProgramTest) -> TestOracle {
 
 pub fn add_oracle(
     test: &mut ProgramTest,
-    product_pubkey: Pubkey,
-    price_pubkey: Pubkey,
+    pyth_product_pubkey: Pubkey,
+    pyth_price_pubkey: Pubkey,
+    switchboard_feed_pubkey: Pubkey,
     price: Decimal,
 ) -> TestOracle {
     let oracle_program_id = read_keypair_file("tests/fixtures/oracle_program_id.json").unwrap();
 
     // Add Pyth product account
     test.add_account_with_file_data(
-        product_pubkey,
+        pyth_product_pubkey,
         u32::MAX as u64,
         oracle_program_id.pubkey(),
-        &format!("{}.bin", product_pubkey.to_string()),
+        &format!("{}.bin", pyth_product_pubkey.to_string()),
     );
 
     // Add Pyth price account after setting the price
-    let filename = &format!("{}.bin", price_pubkey.to_string());
+    let filename = &format!("{}.bin", pyth_price_pubkey.to_string());
     let mut pyth_price_data = read_file(find_file(filename).unwrap_or_else(|| {
         panic!("Unable to locate {}", filename);
     }));
@@ -1126,7 +1202,7 @@ pub fn add_oracle(
         .unwrap();
 
     test.add_account(
-        price_pubkey,
+        pyth_price_pubkey,
         Account {
             lamports: u32::MAX as u64,
             data: pyth_price_data,
@@ -1136,9 +1212,28 @@ pub fn add_oracle(
         },
     );
 
+    // Add Switchboard price feed account after setting the price
+    let filename2 = &format!("{}.bin", switchboard_feed_pubkey.to_string());
+    // mut and set data here later
+    let switchboard_feed_data = read_file(find_file(filename2).unwrap_or_else(|| {
+        panic!("Unable to locate {}", filename2);
+    }));
+
+    test.add_account(
+        switchboard_feed_pubkey,
+        Account {
+            lamports: u32::MAX as u64,
+            data: switchboard_feed_data,
+            owner: oracle_program_id.pubkey(),
+            executable: false,
+            rent_epoch: 0,
+        },
+    );
+
     TestOracle {
-        product_pubkey,
-        price_pubkey,
+        pyth_product_pubkey,
+        pyth_price_pubkey,
+        switchboard_feed_pubkey,
         price,
     }
 }

@@ -12,9 +12,9 @@ use solana_sdk::{
 };
 use spl_token_lending::{
     error::LendingError,
-    instruction::init_reserve,
+    instruction::{init_reserve, update_reserve_config},
     processor::process_instruction,
-    state::{ReserveFees, INITIAL_COLLATERAL_RATIO},
+    state::{ReserveConfig, ReserveFees, INITIAL_COLLATERAL_RATIO},
 };
 
 #[tokio::test]
@@ -46,15 +46,20 @@ async fn test_success() {
     )
     .await;
 
+    let mut config = test_reserve_config();
+    let fee_receiver_keypair = Keypair::new();
+    config.fee_receiver = fee_receiver_keypair.pubkey();
+
     let sol_reserve = TestReserve::init(
         "sol".to_owned(),
         &mut banks_client,
         &lending_market,
         &sol_oracle,
         RESERVE_AMOUNT,
-        TEST_RESERVE_CONFIG,
+        config,
         spl_token::native_mint::id(),
         sol_user_liquidity_account,
+        &fee_receiver_keypair,
         &payer,
         &user_accounts_owner,
     )
@@ -100,7 +105,7 @@ async fn test_already_initialized() {
             liquidity_amount: 42,
             liquidity_mint_decimals: usdc_mint.decimals,
             liquidity_mint_pubkey: usdc_mint.pubkey,
-            config: TEST_RESERVE_CONFIG,
+            config: test_reserve_config(),
             ..AddReserveArgs::default()
         },
     );
@@ -117,11 +122,11 @@ async fn test_already_initialized() {
             usdc_test_reserve.pubkey,
             usdc_test_reserve.liquidity_mint_pubkey,
             usdc_test_reserve.liquidity_supply_pubkey,
-            usdc_test_reserve.liquidity_fee_receiver_pubkey,
             usdc_test_reserve.collateral_mint_pubkey,
             usdc_test_reserve.collateral_supply_pubkey,
-            usdc_oracle.product_pubkey,
-            usdc_oracle.price_pubkey,
+            usdc_oracle.pyth_product_pubkey,
+            usdc_oracle.pyth_price_pubkey,
+            usdc_oracle.switchboard_feed_pubkey,
             lending_market.pubkey,
             lending_market.owner.pubkey(),
             user_transfer_authority.pubkey(),
@@ -173,12 +178,15 @@ async fn test_invalid_fees() {
 
     // fee above 100%
     {
-        let mut config = TEST_RESERVE_CONFIG;
+        let mut config = test_reserve_config();
         config.fees = ReserveFees {
             borrow_fee_wad: 1_000_000_000_000_000_001,
             flash_loan_fee_wad: 1_000_000_000_000_000_001,
             host_fee_percentage: 0,
         };
+
+        let fee_receiver_keypair = Keypair::new();
+        config.fee_receiver = fee_receiver_keypair.pubkey();
 
         assert_eq!(
             TestReserve::init(
@@ -190,6 +198,7 @@ async fn test_invalid_fees() {
                 config,
                 spl_token::native_mint::id(),
                 sol_user_liquidity_account,
+                &fee_receiver_keypair,
                 &payer,
                 &user_accounts_owner,
             )
@@ -204,12 +213,14 @@ async fn test_invalid_fees() {
 
     // host fee above 100%
     {
-        let mut config = TEST_RESERVE_CONFIG;
+        let mut config = test_reserve_config();
         config.fees = ReserveFees {
             borrow_fee_wad: 10_000_000_000_000_000,
             flash_loan_fee_wad: 10_000_000_000_000_000,
             host_fee_percentage: 101,
         };
+        let fee_receiver_keypair = Keypair::new();
+        config.fee_receiver = fee_receiver_keypair.pubkey();
 
         assert_eq!(
             TestReserve::init(
@@ -221,6 +232,7 @@ async fn test_invalid_fees() {
                 config,
                 spl_token::native_mint::id(),
                 sol_user_liquidity_account,
+                &fee_receiver_keypair,
                 &payer,
                 &user_accounts_owner,
             )
@@ -232,4 +244,111 @@ async fn test_invalid_fees() {
             )
         );
     }
+}
+
+#[tokio::test]
+async fn test_update_reserve_config() {
+    let mut test = ProgramTest::new(
+        "spl_token_lending",
+        spl_token_lending::id(),
+        processor!(process_instruction),
+    );
+
+    let user_accounts_owner = Keypair::new();
+    let user_transfer_authority = Keypair::new();
+    let lending_market = add_lending_market(&mut test);
+
+    let mint = add_usdc_mint(&mut test);
+    let oracle = add_usdc_oracle(&mut test);
+    let test_reserve = add_reserve(
+        &mut test,
+        &lending_market,
+        &oracle,
+        &user_accounts_owner,
+        AddReserveArgs {
+            liquidity_amount: 42,
+            liquidity_mint_decimals: mint.decimals,
+            liquidity_mint_pubkey: mint.pubkey,
+            config: test_reserve_config(),
+            ..AddReserveArgs::default()
+        },
+    );
+
+    let (mut banks_client, payer, recent_blockhash) = test.start().await;
+
+    // Create a reserve
+    let mut transaction = Transaction::new_with_payer(
+        &[init_reserve(
+            spl_token_lending::id(),
+            42,
+            test_reserve.config,
+            test_reserve.user_liquidity_pubkey,
+            test_reserve.user_collateral_pubkey,
+            test_reserve.pubkey,
+            test_reserve.liquidity_mint_pubkey,
+            test_reserve.liquidity_supply_pubkey,
+            test_reserve.collateral_mint_pubkey,
+            test_reserve.collateral_supply_pubkey,
+            oracle.pyth_product_pubkey,
+            oracle.pyth_price_pubkey,
+            oracle.switchboard_feed_pubkey,
+            lending_market.pubkey,
+            lending_market.owner.pubkey(),
+            user_transfer_authority.pubkey(),
+        )],
+        Some(&payer.pubkey()),
+    );
+    transaction.sign(
+        &[&payer, &lending_market.owner, &user_transfer_authority],
+        recent_blockhash,
+    );
+    assert_eq!(
+        banks_client
+            .process_transaction(transaction)
+            .await
+            .unwrap_err()
+            .unwrap(),
+        TransactionError::InstructionError(
+            0,
+            InstructionError::Custom(LendingError::AlreadyInitialized as u32)
+        )
+    );
+
+    // Update the reserve config
+    let new_config: ReserveConfig = ReserveConfig {
+        optimal_utilization_rate: 75,
+        loan_to_value_ratio: 45,
+        liquidation_bonus: 10,
+        liquidation_threshold: 65,
+        min_borrow_rate: 1,
+        optimal_borrow_rate: 5,
+        max_borrow_rate: 45,
+        fees: ReserveFees {
+            borrow_fee_wad: 200_000_000_000,
+            flash_loan_fee_wad: 5_000_000_000_000_000,
+            host_fee_percentage: 15,
+        },
+        deposit_limit: 1_000_000,
+        borrow_limit: 300_000,
+        fee_receiver: Keypair::new().pubkey(),
+    };
+
+    let mut transaction = Transaction::new_with_payer(
+        &[update_reserve_config(
+            spl_token_lending::id(),
+            new_config,
+            test_reserve.pubkey,
+            lending_market.pubkey,
+            lending_market.owner.pubkey(),
+            oracle.pyth_product_pubkey,
+            oracle.pyth_price_pubkey,
+            oracle.switchboard_feed_pubkey,
+        )],
+        Some(&payer.pubkey()),
+    );
+    transaction.sign(&[&payer, &lending_market.owner], recent_blockhash);
+    assert!(banks_client.process_transaction(transaction).await.is_ok());
+
+    let test_reserve = test_reserve.get_state(&mut banks_client).await;
+    assert_eq!(test_reserve.config, new_config);
 }
